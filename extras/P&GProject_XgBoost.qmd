@@ -1,0 +1,539 @@
+---
+title: "P&G"
+author: " P&G "
+format:
+  html:
+    self-contained: true
+---
+
+## The Data
+
+
+```{r}
+
+library(dplyr)
+library(tidyverse)
+library(tidytext)
+library(tm)
+library(textclean)
+library(wordcloud)
+
+train <- read.csv("C:\\Users\\machi\\Downloads\\P&G\\train_new.csv")
+test <- read.csv("C:\\Users\\machi\\Downloads\\P&G\\test_new.csv")
+
+train$dataset_type <- "train"
+test$dataset_type <- "test"
+
+# Inspect data
+glimpse(train)
+#View(train)
+glimpse(test)
+
+combined_data <- rbind(train,test)
+
+
+#View(combined_data)
+```
+
+
+# Data cleaning
+
+```{r}
+
+
+colSums(is.na(combined_data))
+# Check for missing values in the 'review_text' column
+sum(is.na(combined_data$review_text))
+
+#Data Cleaning: Remove NA, punctuation, numbers, etc.
+
+
+combined_data$clean_review <- combined_data$review_text %>%
+  replace_non_ascii() %>% # removing non - ascii characters
+  tolower() %>%  # converting to lower case
+  removeNumbers() %>%  #removing numbers
+  removePunctuation() %>% # removing punctuation
+  removeWords(stopwords('en')) %>%  # remove stopwords
+  stripWhitespace() # removing extra whitespaces
+
+
+
+head(combined_data$clean_review, 10)  
+
+
+```
+
+3. You can use a `for loop`, an `lapply`, or a `purrr::map` statement to bring all of those files together into one data frame. The columns are in the same order, so feel free to bind them together. If you end up with a list of data frames, you can use `do.call(rbind, your_object)`, `dplyr::bind_rows`, or `data.table::rbindlist` to bring them together.
+
+## Exploratory Data Analysis
+
+### Bar plot for review ratings distribution
+
+```{r}
+
+library(ggplot2)
+
+ggplot(combined_data, aes(x = as.factor(review_rating))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribution of Review Ratings", x = "Star Rating", y = "Count of Reviews")
+
+
+```
+
+
+### word cloud of frequent words
+
+```{r}
+library(tidytext)
+library(dplyr)
+library(wordcloud)
+library(RColorBrewer)
+library(wordcloud2)
+# Tokenizing words from the clean_review column
+word_tokens <- combined_data %>%
+  unnest_tokens(word, clean_review) %>%  # Tokenize words
+  filter(!word %in% stop_words$word) %>% # Remove stop words
+  mutate(word = tolower(word)) %>%       # Convert to lowercase
+  filter(nchar(word) > 2) %>%            # Filter out short words
+  count(word, sort = TRUE)               # Count word frequencies
+
+
+
+
+
+#wordcloud(words = word_tokens$word,
+ #         freq = word_tokens$n,
+ #         min.freq = 5,
+ #         max.words = 200,
+ #         scale = c(4, 0.7),
+ #         colors = brewer.pal(8, "Set3"))
+
+
+wordcloud2(data = word_tokens, size = 1, color = "random-light", backgroundColor = "black")
+
+
+
+
+```
+
+
+
+```{r}
+library(tidytext)
+combined_data<- combined_data %>% 
+  mutate(id = row_number())
+
+word_tokens <- combined_data %>% 
+  unnest_tokens(word,clean_review)
+
+#head(train_tokens)
+
+#View(train_tokens)
+
+
+#View(train)
+
+```
+
+Loading the Bing Sentiment Lexicon (Bing Liu)
+
+```{r}
+bing_lexicon <- get_sentiments("bing")
+
+#View(bing_lexicon)
+```
+
+
+Now lets Join the tokens and the Sentiment Lexicon
+
+
+```{r}
+
+
+
+combined_sentiment_word <- word_tokens %>% 
+  inner_join(bing_lexicon, by = "word", relationship = 'many-to-many') %>% 
+  group_by(id) %>% 
+  summarise(
+    positive_words = sum(sentiment == "positive"),
+    negative_words = sum(sentiment == "negative")
+  )
+
+# merging the sentiment word counts into the train dataset
+
+combined_data <- left_join(combined_data,combined_sentiment_word, by ="id")
+
+#View(combined_data)
+
+#Replacing NA vALUES WITH 0 FOR REVIEWS THAT HAD NO SENTIMENT WORDS
+
+
+combined_data$positive_words[is.na(combined_data$positive_words)]<- 0
+combined_data$negative_words[is.na(combined_data$negative_words)]<- 0
+#View(combined_data)
+# Remove the duplicate columns and keep the relevant ones
+#train <- train %>%
+ # select(-positive_words.x, -negative_words.x, -positive_words.y, -negative_words.y)
+
+# Check the cleaned data
+#head(train)
+
+
+```
+
+
+Creating a sentiment Score
+
+```{r}
+combined_data$sentiment_score <- combined_data$positive_words- combined_data$negative_words
+
+#View(combined_data)
+
+```
+
+Need a review_length column
+
+```{r}
+combined_data$review_length <- sapply(strsplit(combined_data$clean_review, " "),length)
+
+head(combined_data$review_length)
+```
+
+
+
+
+Creating a dataset with the relevant features for modeling
+
+```{r}
+library(caret)
+combined_prepared <- combined_data %>% 
+  select(review_rating,sentiment_score,review_length,positive_words,negative_words,brand,category, dataset_type) %>% 
+  na.omit()
+
+
+#View(combined_prepared)
+#one_hot encoding for categorical variables (brand and category)
+
+dummies <- dummyVars(~brand +category, data = combined_prepared)
+
+combined_final <- data.frame(predict(dummies, newdata = combined_prepared))
+
+#View(combined_final)
+
+# combining the encoded variables with the rest of the features
+
+combined_final <- cbind(combined_prepared %>% select(-brand, -category), combined_final)
+combined_final$dataset_type <- combined_prepared$dataset_type
+
+#View(combined_final)
+
+```
+
+Spliting the data into train and test
+
+```{r}
+train_fin <- combined_final[combined_final$dataset_type == 'train',]
+test_fin <- combined_final[combined_final$dataset_type == 'test',]
+
+train_fin <- train_fin %>% 
+  select(-dataset_type)
+
+
+test_fin <- test_fin %>% 
+  select(-dataset_type)
+dim(train_fin)
+dim(test_fin)
+
+#View(test_fin)
+#View(train_fin)
+
+
+```
+
+Model 
+
+
+```{r}
+library(ROSE)
+library(xgboost)
+
+# Step 1: Creating binary rating variable for training and test data
+train_fin$binary_rating <- ifelse(train_fin$review_rating == 5, 1, 0)
+test_fin$binary_rating <- ifelse(test_fin$review_rating == 5, 1, 0)
+
+# Step 2: Removing the original review_rating column
+train_fin$review_rating <- NULL
+test_fin$review_rating <- NULL
+
+# Step 3: Checking the dimensions and view the training data
+dim(train_fin)
+View(train_fin)
+
+
+# Converting binary_rating to a factor
+train_fin$binary_rating <- as.factor(train_fin$binary_rating)
+
+# Applying SMOTE to balance the training dataset
+#train_balanced <- SMOTE(binary_rating ~ ., data = train_fin, perc.over = 200, perc.under = 150)
+
+train_balanced <- readRDS("C:\\Users\\machi\\Downloads\\P&G\\train_balanced.rds")
+# Checking class distribution
+table(train_balanced$binary_rating)
+
+#saveRDS(train_balanced, file = "C:\\Users\\machi\\Downloads\\P&G\\train_balanced.rds")
+
+
+
+
+
+
+# Step 1: Preparing DMatrix for training
+dtrain_balanced <- xgb.DMatrix(
+  data = as.matrix(train_balanced[, -which(names(train_balanced) == "binary_rating")]),
+  label = as.numeric(train_balanced$binary_rating) - 1
+)
+
+dtest_balanced <- xgb.DMatrix(
+  data = as.matrix(test_fin[, -which(names(test_fin) == "binary_rating")]),
+  label = as.numeric(test_fin$binary_rating) - 1
+)
+
+set.seed(123)
+final_model_balanced <- xgboost(
+  data = dtrain_balanced,
+  nrounds = 5000,                 # Number of boosting rounds
+  eta = 0.005,                    # Learning rate
+  max_depth = 6,                  # Maximum tree depth
+  min_child_weight = 3,           # Minimum child weight
+  gamma = 0,                      # Regularization parameter
+  subsample = 0.8,                # Row sampling
+  colsample_bytree = 0.8,         # Feature sampling
+  objective = "binary:logistic",  # Binary classification objective
+  eval_metric = "auc",            # Evaluation metric
+  eval_metric = "error",
+  early_stopping_rounds = 50,     # Stop if no improvement for 50 rounds
+  verbose = 1                     # Display training progress
+)
+
+# Step 3: Feature importance plot
+# Get the feature importance matrix
+importance_matrix <- xgb.importance(model = final_model_balanced)
+
+# Filtering to the top 6 variables
+top_6_importance <- importance_matrix[1:6, ]
+
+# Plotting the top 6 variables
+xgb.plot.importance(top_6_importance, main = "Top 6 Feature Importance")
+
+
+# Step 4: Predicting probabilities on the test set
+boost_preds_balanced <- predict(final_model_balanced, dtest_balanced)
+# Step 5: Predicting on the test set
+boost_preds_balanced <- predict(final_model_balanced, dtest_balanced)
+
+# Step 6: Converting probabilities to binary predictions (default threshold = 0.5)
+boost_pred_class_balanced <- ifelse(boost_preds_balanced >= 0.5, 1, 0)
+
+# Step 7: Comparing predictions to actual labels and create a confusion matrix
+library(caret)
+confusion_balanced <- confusionMatrix(
+  as.factor(boost_pred_class_balanced),
+  as.factor(as.numeric(test_fin$binary_rating)),
+  positive = "0"
+)
+
+print(confusion_balanced)
+
+
+accuracy <- confusion_balanced$overall["Accuracy"]
+precision <- confusion_balanced$byClass["Precision"]
+recall <- confusion_balanced$byClass["Recall"]
+f1 <- confusion_balanced$byClass["F1"]
+
+cat("Accuracy:", accuracy, "\n")
+cat("Precision:", precision, "\n")
+cat("Recall:", recall, "\n")
+cat("F1-Score:", f1, "\n")
+
+
+
+print(confusion_balanced)
+#cat("AUC:", auc_value, "\n")
+
+# Step 6: Plot the ROC Curve
+#plot(roc_curve, col = "blue", main = "ROC Curve for Balanced Model")
+
+```
+
+#
+#library(xgboost)
+#library(caret)
+#
+## Step 1: Prepare DMatrix for training and testing
+#dtrain_balanced <- xgb.DMatrix(
+#  data = as.matrix(train_balanced[, -which(names(train_balanced) == #"binary_rating")]),
+#  label = as.numeric(train_balanced$binary_rating) - 1
+#)
+#
+#dtest_balanced <- xgb.DMatrix(
+#  data = as.matrix(test_fin[, -which(names(test_fin) == #"binary_rating")]),
+#  label = as.numeric(test_fin$binary_rating) - 1
+#)
+#
+## Step 2: Define new parameters for hyperparameter tuning
+#params <- list(
+#  objective = "binary:logistic",   # Binary classification
+#  eval_metric = "auc", 
+#  eval_metric = "error", # Evaluation metrics
+#  eta = 0.01,                      # Learning rate
+#  max_depth = 8,                   # Maximum tree depth
+#  min_child_weight = 5,            # Minimum sum of weights for a child #node
+#  subsample = 0.7,                 # Subsample ratio of the training data
+#  colsample_bytree = 0.7          # Subsample ratio of columns per tree
+#  #scale_pos_weight = sum(train_balanced$binary_rating == 1) / #sum(train_balanced$binary_rating == 0)
+#  #lambda = 1,
+#  #alpha =0.5
+#)
+#
+## Step 3: Train the XGBoost model with early stopping
+#set.seed(123)
+#final_model_tuned <- xgb.cv(
+#  params = params,
+#  nfold = 5,
+#  data = dtrain_balanced,
+#  nrounds = 1000,                   # Number of boosting rounds
+#  #watchlist = list(train = dtrain_balanced, eval = dtest_balanced), # #Monitor eval performance
+#  early_stopping_rounds = 50,       # Stop if no improvement for 50 rounds
+#  verbose = 1
+#)
+## Extract the best number of rounds
+#best_nrounds <- final_model_tuned$best_iteration
+#cat("Best number of rounds:", best_nrounds, "\n")
+#
+#set.seed(123)
+#final_model_tuned <- xgb.train(
+#  params = params,
+#  #nfold = 5,
+#  data = dtrain_balanced,
+#  nrounds = 1000,                   # Number of boosting rounds
+#  #watchlist = list(train = dtrain_balanced, eval = dtest_balanced), # #Monitor eval performance
+#  #early_stopping_rounds = 50,       # Stop if no improvement for 50 #rounds
+#  verbose = 1
+#)
+#
+#
+## Step 4: Feature importance plot
+#importance_matrix <- xgb.importance(model = final_model_tuned)
+#xgb.plot.importance(importance_matrix, main = "Feature Importance (Tuned #Model)")
+#
+## Step 5: Predict on the test set
+#boost_preds_tuned <- predict(final_model_tuned, dtest_balanced)
+#
+## Step 6: Convert probabilities to binary predictions
+#threhold <- 0.65 # Default threshold
+#boost_pred_class_tuned <- ifelse(boost_preds_tuned >= threshold, 1, 0)
+#
+## Step 7: Evaluate predictions using confusion matrix
+#confusion_tuned <- confusionMatrix(
+#  as.factor(boost_pred_class_tuned),
+#  as.factor(as.numeric(test_fin$binary_rating) ),
+#  positive = "0"
+#)
+#
+## Print confusion matrix
+#print(confusion_tuned)
+#
+## Step 8: Evaluate with an alternative threshold
+#library(pROC)
+#roc_curve <- roc(as.numeric(test_fin$binary_rating) - 1, #boost_preds_tuned)
+#optimal_threshold <- as.numeric(coords(roc_curve, "best", ret = #"threshold")[1])
+#
+## Recompute classifications with optimal threshold
+#boost_pred_class_optimal <- ifelse(boost_preds_tuned >= optimal_threshold, #1, 0)
+#
+## Evaluate with the optimal threshold
+#confusion_optimal <- confusionMatrix(
+#  as.factor(boost_pred_class_optimal),
+#  as.factor(as.numeric(test_fin$binary_rating) - 1),
+#  positive = "1"
+#)
+#
+## Print confusion matrix and AUC
+#print(confusion_optimal)
+#cat("AUC:", auc(roc_curve), "\n")
+#
+## Step 9: Plot ROC Curve
+#plot(roc_curve, col = "blue", main = "ROC Curve for Tuned Model")
+#```
+#
+#
+#
+#
+#
+#
+#
+#
+#
+##library(caret)
+##library(e1071)  # SVM implementation
+##library(pROC)   # For AUC and ROC
+##
+### Prepare training and test data
+#train_data <- train_balanced[, -which(names(train_balanced) == #"binary_rating")]
+#train_labels <- as.factor(train_balanced$binary_rating)
+#
+#test_data <- test_fin[, -which(names(test_fin) == "binary_rating")]
+#test_labels <- as.factor(test_fin$binary_rating)
+## Define the training control
+#control <- trainControl(
+#  method = "cv",          # Cross-validation
+#  number = 5,             # 5-fold CV
+#  classProbs = TRUE,      # Enable probabilities
+#  summaryFunction = twoClassSummary  # Evaluate with AUC
+#)
+#
+## Rename levels for train_labels and test_labels
+#train_labels <- factor(train_labels, levels = c("0", "1"), labels = #c("Class0", "Class1"))
+#test_labels <- factor(test_labels, levels = c("0", "1"), labels = #c("Class0", "Class1"))
+#
+## Train the SVM model
+#set.seed(123)
+#svm_model <- train(
+#    x = train_data,
+#    y = train_labels,
+#    method = "svmRadial",    # Radial kernel
+#    trControl = control,
+#    metric = "ROC",          # Optimize for AUC
+#    tuneLength = 5           # Test 5 different hyperparameter #combinations
+#)
+#
+## Print the best model
+#print(svm_model)
+#
+#
+## Predict probabilities on the test set
+#svm_preds_prob <- predict(svm_model, test_data, type = "prob")[, "Class1"] # # Probability for Class1
+#
+## Convert probabilities to binary predictions using a threshold
+#threshold <- 0.5
+#svm_preds_class <- ifelse(svm_preds_prob >= threshold, "Class1", "Class0")
+#
+## Evaluate with a confusion matrix
+#svm_confusion <- confusionMatrix(
+#    as.factor(svm_preds_class),
+#    test_labels,
+#    positive = "Class1"
+#)
+#print(svm_confusion)
+#
+## Calculate AUC
+#svm_roc_curve <- roc(as.numeric(test_labels == "Class1"), #as.numeric(svm_preds_prob))
+#svm_auc <- auc(svm_roc_curve)
+#cat("AUC for SVM:", svm_auc, "\n")
+#
+## Plot ROC Curve
+#plot(svm_roc_curve, col = "purple", main = "ROC Curve - SVM")
+#
+#
+#
+#
